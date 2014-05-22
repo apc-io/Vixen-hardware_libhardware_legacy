@@ -51,11 +51,25 @@ int is_wifi_driver_loaded();
 int wifi_start_supplicant(int p2pSupported);
 
 /**
+ * Start supplicant for soft AP.
+ *
+ * @return 0 on success, < 0 on failure.
+ */
+int wifi_ap_start_supplicant();
+
+/**
  * Stop supplicant.
  *
  * @return 0 on success, < 0 on failure.
  */
 int wifi_stop_supplicant(int p2pSupported);
+
+/**
+ * Stop supplicant for soft AP.
+ *
+ * @return 0 on success, < 0 on failure.
+ */
+int wifi_ap_stop_supplicant();
 
 /**
  * Open a connection to supplicant on interface

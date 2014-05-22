@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *      http://www.apache.org/licenses/LICENSE-2.0 
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -81,6 +81,7 @@ public:
         ENFORCED_AUDIBLE = 7, // Sounds that cannot be muted by user and must be routed to speaker
         DTMF             = 8,
         TTS              = 9,
+        FM_RADIO         = 10,
         NUM_STREAM_TYPES
     };
 
@@ -214,6 +215,7 @@ public:
         MODE_RINGTONE,
         MODE_IN_CALL,
         MODE_IN_COMMUNICATION,
+        MODE_FM_RADIO,
         NUM_MODES  // not a valid entry, denotes end-of-list
     };
 

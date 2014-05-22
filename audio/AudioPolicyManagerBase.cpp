@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *      http://www.apache.org/licenses/LICENSE-2.0 
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -169,12 +169,9 @@ status_t AudioPolicyManagerBase::setDeviceConnectionState(audio_devices_t device
 
         updateDevicesAndOutputs();
         for (size_t i = 0; i < mOutputs.size(); i++) {
-            // do not force device change on duplicated output because if device is 0, it will
-            // also force a device 0 for the two outputs it is duplicated to which may override
-            // a valid device selection on those outputs.
             setOutputDevice(mOutputs.keyAt(i),
                             getNewDevice(mOutputs.keyAt(i), true /*fromCache*/),
-                            !mOutputs.valueAt(i)->isDuplicated(),
+                            true,
                             0);
         }
 
@@ -348,7 +345,7 @@ void AudioPolicyManagerBase::setPhoneState(int state)
         for (size_t i = 0; i < mOutputs.size(); i++) {
             AudioOutputDescriptor *desc = mOutputs.valueAt(i);
             //take the biggest latency for all outputs
-            if (delayMs < (int)desc->mLatency*2) {
+            if (delayMs < desc->mLatency*2) {
                 delayMs = desc->mLatency*2;
             }
             //mute STRATEGY_MEDIA on all outputs
@@ -702,9 +699,8 @@ status_t AudioPolicyManagerBase::startOutput(audio_io_handle_t output,
                 }
                 // wait for audio on other active outputs to be presented when starting
                 // a notification so that audio focus effect can propagate.
-                uint32_t latency = desc->latency();
-                if (shouldWait && desc->isActive(latency * 2) && (waitMs < latency)) {
-                    waitMs = latency;
+                if (shouldWait && (desc->refCount() != 0) && (waitMs < desc->latency())) {
+                    waitMs = desc->latency();
                 }
             }
         }
@@ -1646,7 +1642,7 @@ status_t AudioPolicyManagerBase::checkOutputsForDevice(audio_devices_t device,
                                   reply.string());
                         value = strpbrk((char *)reply.string(), "=");
                         if (value != NULL) {
-                            loadSamplingRates(value + 1, profile);
+                            loadSamplingRates(value, profile);
                         }
                     }
                     if (profile->mFormats[0] == 0) {
@@ -1656,7 +1652,7 @@ status_t AudioPolicyManagerBase::checkOutputsForDevice(audio_devices_t device,
                                   reply.string());
                         value = strpbrk((char *)reply.string(), "=");
                         if (value != NULL) {
-                            loadFormats(value + 1, profile);
+                            loadFormats(value, profile);
                         }
                     }
                     if (profile->mChannelMasks[0] == 0) {
@@ -1676,7 +1672,6 @@ status_t AudioPolicyManagerBase::checkOutputsForDevice(audio_devices_t device,
                          ((profile->mFormats[0] == 0) &&
                              (profile->mChannelMasks.size() < 2))) {
                         ALOGW("checkOutputsForDevice() direct output missing param");
-                        mpClientInterface->closeOutput(output);
                         output = 0;
                     } else {
                         addOutput(output, desc);
@@ -1997,6 +1992,9 @@ audio_devices_t AudioPolicyManagerBase::getNewDevice(audio_io_handle_t output, b
     } else if (isInCall() ||
                     outputDesc->isUsedByStrategy(STRATEGY_PHONE)) {
         device = getDeviceForStrategy(STRATEGY_PHONE, fromCache);
+    } else if (outputDesc->isUsedByStrategy(STRATEGY_FM_RADIO) || 
+		mPhoneState == AudioSystem::MODE_FM_RADIO) {
+        device = getDeviceForStrategy(STRATEGY_FM_RADIO, fromCache);
     } else if (outputDesc->isUsedByStrategy(STRATEGY_SONIFICATION)) {
         device = getDeviceForStrategy(STRATEGY_SONIFICATION, fromCache);
     } else if (outputDesc->isUsedByStrategy(STRATEGY_SONIFICATION_RESPECTFUL)) {
@@ -2005,7 +2003,7 @@ audio_devices_t AudioPolicyManagerBase::getNewDevice(audio_io_handle_t output, b
         device = getDeviceForStrategy(STRATEGY_MEDIA, fromCache);
     } else if (outputDesc->isUsedByStrategy(STRATEGY_DTMF)) {
         device = getDeviceForStrategy(STRATEGY_DTMF, fromCache);
-    }
+    } 
 
     ALOGV("getNewDevice() selected device %x", device);
     return device;
@@ -2053,6 +2051,8 @@ AudioPolicyManagerBase::routing_strategy AudioPolicyManagerBase::getStrategy(
         return STRATEGY_MEDIA;
     case AudioSystem::ENFORCED_AUDIBLE:
         return STRATEGY_ENFORCED_AUDIBLE;
+    case AudioSystem::FM_RADIO:
+        return STRATEGY_FM_RADIO;
     }
 }
 
@@ -2263,6 +2263,58 @@ audio_devices_t AudioPolicyManagerBase::getDeviceForStrategy(routing_strategy st
         }
         } break;
 
+    case STRATEGY_FM_RADIO: {
+        // for FM radio, we first consider the forced use and then the available devices by order
+        // of priority
+        switch (mForceUse[AudioSystem::FOR_COMMUNICATION]) {
+        default:    // FORCE_NONE
+            device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_WIRED_HEADPHONE;
+            if (device) break;
+            device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_WIRED_HEADSET;
+            if (device) break;
+#ifdef WITH_A2DP
+            // when not in a phone call, phone strategy should route STREAM_VOICE_CALL to A2DP
+            if (!isInCall() && !mA2dpSuspended) {
+                device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_BLUETOOTH_A2DP;
+                if (device) break;
+                device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_BLUETOOTH_A2DP_HEADPHONES;
+                if (device) break;
+            }
+#endif
+            device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_DGTL_DOCK_HEADSET;
+            if (device) break;
+            device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_AUX_DIGITAL;
+            if (device) break;
+            device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_ANLG_DOCK_HEADSET;
+            if (device) break;
+            device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_SPEAKER;
+            if (device == 0) {
+                ALOGE("FMradio getNewDevice() speaker device not found");
+            }
+            break;
+
+        case AudioSystem::FORCE_SPEAKER:
+#ifdef WITH_A2DP
+            // when not in a phone call, phone strategy should route STREAM_VOICE_CALL to
+            // A2DP speaker when forcing to speaker output
+            if (!isInCall() && !mA2dpSuspended) {
+                device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_BLUETOOTH_A2DP_SPEAKER;
+                if (device) break;
+            }
+#endif
+            device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_DGTL_DOCK_HEADSET;
+            if (device) break;
+            device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_AUX_DIGITAL;
+            if (device) break;
+            device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_ANLG_DOCK_HEADSET;
+            if (device) break;
+            device = mAvailableOutputDevices & AUDIO_DEVICE_OUT_SPEAKER;
+            if (device == 0) {
+                ALOGE("FMradio getNewDevice() speaker device not found");
+            }
+            break;
+        }
+        } break;
     default:
         ALOGW("getDeviceForStrategy() unknown strategy: %d", strategy);
         break;
@@ -2685,6 +2737,11 @@ const AudioPolicyManagerBase::VolumeCurvePoint
         sSpeakerMediaVolumeCurve, // DEVICE_CATEGORY_SPEAKER
         sDefaultMediaVolumeCurve  // DEVICE_CATEGORY_EARPIECE
     },
+    { // AUDIO_STREAM_FM_RADIO
+        sDefaultVolumeCurve, // DEVICE_CATEGORY_HEADSET
+        sDefaultVolumeCurve, // DEVICE_CATEGORY_SPEAKER
+        sDefaultVolumeCurve  // DEVICE_CATEGORY_EARPIECE
+    },
 };
 
 void AudioPolicyManagerBase::initializeVolumeCurves()
@@ -2713,7 +2770,7 @@ float AudioPolicyManagerBase::computeVolume(int stream,
     // if volume is not 0 (not muted), force media volume to max on digital output
     if (stream == AudioSystem::MUSIC &&
         index != mStreams[stream].mIndexMin &&
-        (device == AUDIO_DEVICE_OUT_AUX_DIGITAL ||
+        (/*device == AUDIO_DEVICE_OUT_AUX_DIGITAL ||*/
          device == AUDIO_DEVICE_OUT_DGTL_DOCK_HEADSET ||
          device == AUDIO_DEVICE_OUT_USB_ACCESSORY ||
          device == AUDIO_DEVICE_OUT_USB_DEVICE)) {
@@ -2796,6 +2853,10 @@ status_t AudioPolicyManagerBase::checkAndSetVolume(int stream,
         // enabled
         if (stream == AudioSystem::BLUETOOTH_SCO) {
             mpClientInterface->setStreamVolume(AudioSystem::VOICE_CALL, volume, output, delayMs);
+        }
+        else if (stream == AudioSystem::FM_RADIO) {
+            // FM Radio uses hw mixer, the volume step should be linear
+            volume = (float)index/(float)mStreams[stream].mIndexMax;
         }
         mpClientInterface->setStreamVolume((AudioSystem::stream_type)stream, volume, output, delayMs);
     }
@@ -3066,18 +3127,6 @@ audio_devices_t AudioPolicyManagerBase::AudioOutputDescriptor::supportedDevices(
     }
 }
 
-bool AudioPolicyManagerBase::AudioOutputDescriptor::isActive(uint32_t inPastMs) const
-{
-    nsecs_t sysTime = systemTime();
-    for (int i = 0; i < AudioSystem::NUM_STREAM_TYPES; i++) {
-        if (mRefCount[i] != 0 ||
-            ns2ms(sysTime - mStopTime[i]) < inPastMs) {
-            return true;
-        }
-    }
-    return false;
-}
-
 status_t AudioPolicyManagerBase::AudioOutputDescriptor::dump(int fd)
 {
     const size_t SIZE = 256;
@@ -3142,7 +3191,7 @@ status_t AudioPolicyManagerBase::AudioInputDescriptor::dump(int fd)
 AudioPolicyManagerBase::StreamDescriptor::StreamDescriptor()
     :   mIndexMin(0), mIndexMax(1), mCanBeMuted(true)
 {
-    mIndexCur.add(AUDIO_DEVICE_OUT_DEFAULT, 0);
+    mIndexCur.add(AUDIO_DEVICE_OUT_DEFAULT, 1);
 }
 
 int AudioPolicyManagerBase::StreamDescriptor::getVolumeIndex(audio_devices_t device)
